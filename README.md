@@ -11,12 +11,12 @@ Keep the shared code in this GitHub repo and add one non-secret JSON file per ho
 | Task                       | Default behaviour                                                                                                                                                               |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Maintenance                | Daily at 03:30 Europe/Dublin, with up to 5 minutes jitter                                                                                                                       |
-| Backup gate                | Verify Hetzner backups enabled, server identity matches and an available backup is at most 48 hours old                                                                         |
+| Backup gate                | By default verify Hetzner backups enabled, server identity matches and an available backup is at most 48 hours old; `backup_policy: allow_missing` explicitly waives backup availability/freshness |
 | Pre-update checks          | Check disk space/inodes, required mounts and configured app health                                                                                                              |
 | Updates                    | Ubuntu packages from existing apt repositories; Docker Engine/CLI within the configured major, plus installed containerd/Compose/Buildx packages                                |
 | Reboot                     | Every successful maintenance run, even if Ubuntu does not request it                                                                                                            |
 | Boot recovery              | Docker restart policies bring apps up; repair our interrupted temporary package holds; verify app health                                                                        |
-| Monitoring                 | Roughly every 2 minutes after the previous check finishes; first check 12 minutes after boot                                                                                    |
+| Monitoring                 | Roughly every 60 minutes after the previous check finishes; first check 12 minutes after boot                                                                                  |
 | Recovery                   | Three unhealthy resource checks → restart existing matching containers, at most once/resource/hour; Docker outage → one daemon restart/6h, then at most one recovery reboot/24h |
 | Alerts                     | SMTP to your existing inbox and/or a Discord-compatible webhook; queued retry on delivery failure; six-hour reminder limit per issue                                            |
 | Provider backup monitoring | Recheck backup freshness every 6 hours while monitoring, and before every update                                                                                                |
@@ -26,8 +26,8 @@ Healthy routine work is quiet. There is no automated app-image deployment, schem
 ## What you need
 
 - Your current Hetzner host, Ubuntu 22.04, 24.04 or 26.04 LTS, systemd and existing official Docker CE packages. Other OS/releases require validation before use. Ubuntu 26.04 is newly enabled based on the reported host/package combination and still needs a supervised maintenance-cycle validation before relying on unattended updates.
-- Hetzner daily server backups enabled, with the first successful backup complete. Provider backups are a paid service, but need no extra machine or bucket.
-- A **read-only** Hetzner project API token for checking backup status. This repo never invokes write/reset/rebuild API endpoints.
+- By default, Hetzner daily server backups enabled with the first successful backup complete. To proceed without them, set `backup_policy` to `allow_missing` in the host profile and accept the risk of unrecoverable data loss after a failed update or disk loss.
+- A **read-only** Hetzner project API token for checking server identity and backup status. This repo never invokes write/reset/rebuild API endpoints. Even with `allow_missing`, the token and matching server identity are required; API/network errors still block maintenance.
 - An existing SMTP account with SMTP credentials/app password **or** a webhook accepting `{"content":"message"}`. Neither option needs another hosted server.
 - Persistent `always`/`unless-stopped` restart policies for important containers, configured in Coolify/Compose so redeployments preserve them.
 
@@ -65,9 +65,9 @@ For another host, add `hosts/coolify-02.json`, configure that server's Hetzner b
 
 ## Scope of backup protection
 
-This version checks **provider disk backups only**. Hetzner backups exclude attached Volumes and do not guarantee consistency for running databases. The backup gate refuses hosts with attached Hetzner Volumes rather than pretending they are covered. Remote/NFS/plugin storage is also outside provider disk protection; do not use this profile for such data without a separate backup design.
+This version checks **provider disk backups only** when `backup_policy` is `required` (the default). Hetzner backups exclude attached Volumes and do not guarantee consistency for running databases. The gate refuses hosts with attached Hetzner Volumes rather than pretending they are covered, including when `backup_policy` is `allow_missing`. Remote/NFS/plugin storage is also outside provider disk protection; do not use this profile for such data without a separate backup design.
 
-The scripts neither stop apps for provider backups nor choose their timing. Expect up to 48 hours of data exposure at the gate's default tolerance, not a fresh pre-upgrade database backup. Provider freshness checks prove an available backup exists, **not that it has been restored successfully**. For valuable data, add native database backups and test restoring them. Never treat a second copy on the same disk as protection against losing that disk.
+The scripts neither stop apps for provider backups nor choose their timing. With required backups, expect up to 48 hours of data exposure at the gate's default tolerance, not a fresh pre-upgrade database backup. With `allow_missing`, maintenance may run with no provider restore point at all. Provider freshness checks prove an available backup exists, **not that it has been restored successfully**. For valuable data, add native database backups and test restoring them. Never treat a second copy on the same disk as protection against losing that disk.
 
 ## Updates to this repo and hosts
 
@@ -110,7 +110,7 @@ Disabling refuses while maintenance is active, restores previous apt-timer enabl
 
 ## Verification and limits
 
-26 mocked safety tests, Python/Bash syntax checks and generated systemd unit verification passed when packaged. The tests cover supported Ubuntu releases, monitor-only activation preflight, Discord webhook headers, backup identity/freshness/pagination, attached-volume refusal, alert queues, recovery limits, TLS probes, reboot verification and interrupted package holds. This repo has **not** been installed or tested against your live host, credentials or provider account.
+34 mocked safety tests, Python/Bash syntax checks and generated systemd unit verification passed when packaged. The tests cover supported Ubuntu releases, hourly monitor scheduling, required and optional backup policies, monitor-only activation preflight, Discord webhook headers, backup identity/freshness/pagination, attached-volume refusal, alert queues, recovery limits, TLS probes, reboot verification and interrupted package holds. This repo has **not** been installed or tested against your live host, credentials or provider account.
 
 Before enabling on an important host, test a disposable clone or a restore from a provider backup. Then exercise one planned reboot, verify every app and its persistence, confirm a real alert reaches you, and inspect the next scheduled run. Mocked tests cannot prove live backup restorability, Docker compatibility or successful delivery to a phone.
 

@@ -80,6 +80,8 @@ def validate(c):
         raise RuntimeError('Set disk_paths for every data filesystem')
     if not isinstance(c.get('docker_major'), int) or c['docker_major'] < 20:
         raise RuntimeError('Set docker_major to the currently installed Engine major')
+    if c.get('backup_policy','required') not in ('required','allow_missing'):
+        raise RuntimeError('Set backup_policy to required or allow_missing')
     if not isinstance(c.get('hetzner_server_id'), int) or c['hetzner_server_id'] <= 0:
         raise RuntimeError('Set the numeric Hetzner server ID')
     if not c.get('hetzner_server_name') or 'REPLACE' in c['hetzner_server_name']:
@@ -165,6 +167,16 @@ class Care:
             if disk.free < self.c['min_free_gib']*1024**3 or (stat.f_files and stat.f_favail/stat.f_files<.05):
                 raise RuntimeError('Disk space/inodes low at '+path)
 
+    def backup_missing(self, message):
+        if self.c.get('backup_policy','required')!='allow_missing':
+            raise RuntimeError(message)
+        self.s['last_backup_check']=time.time()
+        self.s['backup_status']='missing_allowed'
+        self.s.pop('backup_created',None)
+        self.save()
+        print(f'[{self.c["host_name"]}] {message}; continuing because backup_policy=allow_missing',flush=True)
+        return False
+
     def backup_check(self):
         token=self.secret.get('hetzner_read_token','')
         if not token: raise RuntimeError('Configure a read-only Hetzner API token in secrets.json')
@@ -172,10 +184,10 @@ class Care:
         server=request(base+'/servers/'+str(self.c['hetzner_server_id']),token)['server']
         if server['name']!=self.c['hetzner_server_name']:
             raise RuntimeError('Hetzner server name/ID mismatch; refusing updates')
-        if not server.get('backup_window'):
-            raise RuntimeError('Enable Hetzner backups and wait for the first completed backup')
         if server.get('volumes'):
             raise RuntimeError('Attached Hetzner Volumes are not covered by disk backups; add a verified volume-backup strategy before enabling this profile')
+        if not server.get('backup_window'):
+            return self.backup_missing('Enable Hetzner backups and wait for the first completed backup')
         images=[]; page=1
         while page:
             data=request(base+'/images?type=backup&per_page=50&page='+str(page),token)
@@ -183,8 +195,9 @@ class Care:
             page=data['meta']['pagination'].get('next_page')
         latest=max((dt.datetime.fromisoformat(i['created'].replace('Z','+00:00')).timestamp() for i in images),default=0)
         if latest>time.time()+300 or time.time()-latest>self.c['backup_max_age_hours']*3600:
-            raise RuntimeError('No fresh available Hetzner backup for this server')
-        self.s['last_backup_check']=time.time(); self.s['backup_created']=latest; self.save()
+            return self.backup_missing('No fresh available Hetzner backup for this server')
+        self.s['last_backup_check']=time.time(); self.s['backup_created']=latest; self.s['backup_status']='verified'; self.save()
+        return True
 
     def containers(self,r):
         args=['docker','ps','-aq']
@@ -228,7 +241,7 @@ class Care:
         if not self.healthy(): raise RuntimeError('Fix resource health checks before activation')
         if not self.notify('setup-test','Setup alert test; verify receipt in your inbox/phone',force=True):
             raise RuntimeError('No alert destination accepted the test message')
-        mode='monitor-only; updates remain disabled' if monitor_only else 'full maintenance'
+        mode='monitor-only; updates remain disabled' if monitor_only else 'full maintenance; backup_policy='+self.c.get('backup_policy','required')
         print(f'Preflight passed ({mode}). The test confirms delivery acceptance, not human receipt.')
 
     def upgrade(self):
@@ -327,7 +340,11 @@ class Care:
         except RuntimeError as e: self.notify('disk',str(e))
         if time.time()-self.s.get('last_backup_check',0)>21600:
             try:
-                self.backup_check(); self.notify('backup','Provider backups recovered',resolved=True)
+                verified=self.backup_check()
+                if verified:
+                    self.notify('backup','Provider backups recovered',resolved=True)
+                else:
+                    self.notify('backup','No fresh provider backup; maintenance continues under backup_policy=allow_missing')
             except RuntimeError as e: self.notify('backup',str(e))
         if time.time()-self.s.get('last_maintenance',self.s.get('enabled_at',time.time()))>48*3600:
             self.notify('maintenance','No successful maintenance plus reboot health verification in 48h')
@@ -357,7 +374,9 @@ def main():
         care=Care(config,secrets)
         try:
             if args.command=='status':
-                print(json.dumps({k:care.s.get(k) for k in ('phase','maintenance_started','last_monitor','last_maintenance','backup_created','last_backup_check','pending_postboot')},indent=2))
+                status={k:care.s.get(k) for k in ('phase','maintenance_started','last_monitor','last_maintenance','backup_created','last_backup_check','backup_status','pending_postboot')}
+                status['backup_policy']=config.get('backup_policy','required')
+                print(json.dumps(status,indent=2))
             elif args.command=='alert-test':
                 if not care.notify('manual-test','Manual alert test',force=True): return 1
             elif args.command=='failure': care.notify('service-'+args.unit,'Service failed: '+args.unit)

@@ -5,6 +5,7 @@
   "docker_major": 29,
   "maintenance_calendar": "*-*-* 03:30:00 Europe/Dublin",
   "backup_max_age_hours": 48,
+  "backup_policy": "allow_missing",
   "min_free_gib": 5,
   "disk_paths": ["/", "/var/lib/docker"],
   "required_mounts": [],

@@ -95,7 +95,7 @@ UMask=0077
 Description=Resource recovery loop
 [Timer]
 OnBootSec=12min
-OnUnitInactiveSec=2min
+OnUnitInactiveSec=60min
 [Install]
 WantedBy=timers.target
 ''',

@@ -34,6 +34,11 @@ class Tests(unittest.TestCase):
                 result=subprocess.run(['bash','-c',f'source "{script}"; hostcare_supported_os {os_id} {release}'],check=False)
                 self.assertNotEqual(result.returncode,0)
 
+    def test_monitor_timer_repeats_every_sixty_minutes(self):
+        installer=Path(__file__).resolve().parents[1]/'scripts/install.sh'
+        text=installer.read_text()
+        self.assertIn('OnUnitInactiveSec=60min',text)
+
     def api(self,**server):
         s={'name':'test','backup_window':'00-04','volumes':[]};s.update(server)
         return {'server':s}
@@ -42,8 +47,46 @@ class Tests(unittest.TestCase):
         v={'bound_to':123,'status':'available','created':h.dt.datetime.now(h.dt.timezone.utc).isoformat()};v.update(kwargs);return v
 
     def test_fresh_backup_accepted(self):
-        with patch.object(h,'request',side_effect=[self.api(),self.image_response([self.fresh_image()])]):self.c.backup_check()
+        with patch.object(h,'request',side_effect=[self.api(),self.image_response([self.fresh_image()])]):
+            self.assertTrue(self.c.backup_check())
         self.assertIn('last_backup_check',self.c.s)
+        self.assertEqual(self.c.s['backup_status'],'verified')
+
+    def test_allow_missing_policy_accepts_disabled_backups_and_records_status(self):
+        self.config['backup_policy']='allow_missing'
+        with patch.object(h,'request',return_value=self.api(backup_window=None)) as api:
+            self.assertFalse(self.c.backup_check())
+        api.assert_called_once()
+        self.assertEqual(self.c.s['backup_status'],'missing_allowed')
+        self.assertIn('last_backup_check',self.c.s)
+        self.assertNotIn('backup_created',self.c.s)
+
+    def test_allow_missing_policy_accepts_stale_backup(self):
+        self.config['backup_policy']='allow_missing'
+        stale=self.fresh_image(created='2000-01-01T00:00:00Z')
+        with patch.object(h,'request',side_effect=[self.api(),self.image_response([stale])]):
+            self.assertFalse(self.c.backup_check())
+        self.assertEqual(self.c.s['backup_status'],'missing_allowed')
+
+    def test_allow_missing_policy_still_checks_server_identity_and_volumes(self):
+        self.config['backup_policy']='allow_missing'
+        with patch.object(h,'request',return_value=self.api(name='wrong')):
+            with self.assertRaisesRegex(RuntimeError,'mismatch'):self.c.backup_check()
+        with patch.object(h,'request',return_value=self.api(volumes=[99])):
+            with self.assertRaisesRegex(RuntimeError,'Volumes'):self.c.backup_check()
+
+    def test_allow_missing_policy_still_requires_api_and_token(self):
+        self.config['backup_policy']='allow_missing'
+        with patch.object(h,'request',side_effect=RuntimeError('API unavailable')):
+            with self.assertRaisesRegex(RuntimeError,'API unavailable'):self.c.backup_check()
+        self.c.secret['hetzner_read_token']=''
+        with patch.object(h,'request') as api:
+            with self.assertRaisesRegex(RuntimeError,'read-only Hetzner API token'):self.c.backup_check()
+        api.assert_not_called()
+
+    def test_unknown_backup_policy_is_rejected(self):
+        self.config['backup_policy']='ignore'
+        with self.assertRaisesRegex(RuntimeError,'backup_policy'):h.validate(self.config)
     def test_disabled_backups_refused(self):
         with patch.object(h,'request',return_value=self.api(backup_window=None)):
             with self.assertRaisesRegex(RuntimeError,'Enable Hetzner'):self.c.backup_check()
@@ -67,6 +110,26 @@ class Tests(unittest.TestCase):
         with patch.object(self.c,'backup_check',side_effect=RuntimeError('bad backup')),patch.object(self.c,'upgrade') as upgrade,patch.object(h,'run') as run:
             with self.assertRaises(RuntimeError):self.c.maintenance()
         upgrade.assert_not_called();run.assert_not_called()
+
+    def test_allow_missing_backup_policy_allows_maintenance(self):
+        self.config['backup_policy']='allow_missing'
+        with patch.object(self.c,'repair_holds'),patch.object(self.c,'disks'), \
+             patch.object(h,'request',return_value=self.api(backup_window=None)),patch.object(self.c,'healthy',return_value=True), \
+             patch.object(self.c,'upgrade') as upgrade,patch.object(h,'run',return_value=result()), \
+             patch.object(h.Path,'read_text',return_value='boot-id'):
+            self.c.maintenance()
+        upgrade.assert_called_once_with()
+        self.assertTrue(self.c.s['pending_postboot'])
+        self.assertEqual(self.c.s['backup_status'],'missing_allowed')
+
+    def test_allow_missing_backup_policy_allows_full_preflight(self):
+        self.config['backup_policy']='allow_missing'
+        container={'HostConfig':{'RestartPolicy':{'Name':'unless-stopped'}}}
+        with patch.object(self.c,'disks'),patch.object(self.c,'backup_check',return_value=False) as backup, \
+             patch.object(self.c,'containers',return_value=[container]),patch.object(self.c,'healthy',return_value=True), \
+             patch.object(self.c,'notify',return_value=True),patch.object(h,'run'):
+            self.c.preflight()
+        backup.assert_called_once_with()
 
     def test_monitor_only_preflight_skips_backup_gate_but_checks_readiness(self):
         container={'HostConfig':{'RestartPolicy':{'Name':'unless-stopped'}}}

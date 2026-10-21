@@ -32,6 +32,6 @@ print(json.dumps({
     'hetzner_server_name':'REPLACE_WITH_EXACT_NAME',
     'docker_major':int(get(['docker','version','--format','{{.Server.Version}}']).split('.')[0]),
     'maintenance_calendar':'*-*-* 03:30:00 Europe/Dublin',
-    'backup_max_age_hours':48,'min_free_gib':5,'disk_paths':['/','/var/lib/docker'],
+    'backup_max_age_hours':48,'backup_policy':'required','min_free_gib':5,'disk_paths':['/','/var/lib/docker'],
     'required_mounts':[],'recovery_reboot':True,'resources':resources
 },indent=2))

@@ -18,7 +18,7 @@ Use your usual GitHub authentication. No secrets are provided in the download. T
 
 ## 2. Enable backups for your existing server
 
-In Hetzner Console, select the correct project and server, open **Backups** and enable daily backups. This is a paid Hetzner feature, not another host. Wait until the first backup is available. Installation can happen before that; activation/upgrades will refuse until a recent available backup exists.
+Recommended: in Hetzner Console, select the correct project and server, open **Backups** and enable daily backups. This is a paid Hetzner feature, not another host. Wait until the first backup is available. By default activation and upgrades refuse until a recent available backup exists. If you intentionally want maintenance without a verified provider backup, set `backup_policy` to `allow_missing` in the profile (step 3); understand that a failed upgrade or disk loss may then be unrecoverable.
 
 Note the server's **numeric ID** and **exact name**. A copied config for another server must not accidentally validate the wrong backup.
 
@@ -46,7 +46,8 @@ Open `hosts/coolify-01.json` in your editor and:
 4. Keep observed Compose project/service filters if they identify a persistent resource. Name-only filters are a fallback and may need changing after Coolify redeploys. Prefer an observed stable resource UUID label where available; never invent a Coolify label key.
 5. Add HTTPS origin probes for the important web apps; see below.
 6. Add every data filesystem to `disk_paths`; use `required_mounts` for mounts that must exist. These mount checks do not turn unsupported external volumes into backed-up storage.
-7. Leave the default maintenance time at 03:30 Dublin time, or change `maintenance_calendar`. Keep app deployments/other maintenance out of that interval.
+7. Keep `backup_policy` as `required` (or omit it) for the normal backup gate. Set it to `allow_missing` only if you accept maintenance without a recent Hetzner backup. Hostcare still requires the read-only token, verifies server ID/name, and refuses attached Hetzner Volumes; API/network errors still block maintenance.
+8. Leave the default maintenance time at 03:30 Dublin time, or change `maintenance_calendar`. Keep app deployments/other maintenance out of that interval.
 
 Example app resource (replace every placeholder; the URL path must exist):
 
@@ -142,13 +143,15 @@ bash /opt/coolify-host-maintenance/scripts/activate.sh
 
 Activation checks backups, disk/mounts, app health, restart policies and alert delivery. Confirm the test email/webhook reaches you. Then it disables Ubuntu's separate apt timers, installs a managed apt automatic-update/reboot override and enables Hostcare's timers/startup verifier. A single scheduler owns updates and reboots. It never terminates an already running apt transaction; retry after that job finishes.
 
-If a fresh Hetzner backup is not available yet, you can enable **monitor-only** operation:
+If you want health monitoring but no package upgrades/reboots, enable **monitor-only** operation:
 
 ```bash
 bash /opt/coolify-host-maintenance/scripts/activate.sh --monitor-only
 ```
 
-This checks disk/mounts, Docker, monitored resources and alert delivery without requiring the backup gate. It enables health monitoring and boot recovery, but leaves Ubuntu's apt timers unchanged and keeps Hostcare's maintenance timer disabled. Hostcare will report backup problems through its monitor. Package upgrades and their reboot remain blocked until a normal activation passes the backup gate. If Hostcare already owns apt scheduling, first run `scripts/disable.sh` to restore the previous scheduler, then activate monitor-only.
+This checks disk/mounts, Docker, monitored resources and alert delivery without requiring the backup gate. It enables health monitoring and boot recovery, but leaves Ubuntu's apt timers unchanged and keeps Hostcare's maintenance timer disabled. Hostcare will report backup problems through its monitor. If Hostcare already owns apt scheduling, first run `scripts/disable.sh` to restore the previous scheduler, then activate monitor-only.
+
+If instead you want scheduled package maintenance without a current provider backup, set `"backup_policy": "allow_missing"` in the host profile and deploy it. Then use normal activation. Hostcare still checks the Hetzner server identity and refuses attached Hetzner Volumes; token/API failures still block maintenance. A missing or stale backup is recorded in status and logs and warned about, but does not block package updates/reboot. This deliberately accepts the risk that an update or disk failure may be unrecoverable.
 
 Check:
 
@@ -157,7 +160,7 @@ sudo hostcare status
 sudo systemctl list-timers 'hostcare-*'
 ```
 
-If preflight fails, correct the reported condition and rerun activation. Common causes: waiting for the first provider backup, wrong project token/server name, an overly broad container filter, missing restart policy, a redirect/login page at the health URL or SMTP authentication failure.
+If preflight fails, correct the reported condition and rerun activation. With the default `required` policy, common causes include waiting for the first provider backup; all policies still require a working token, matching server identity, no attached Hetzner Volumes, an appropriately narrow container filter, persistent restart policies, healthy probes and a working alert destination.
 
 ## 7. Prove a reboot and keep an outside observer
 
