@@ -1,0 +1,36 @@
+{
+  "host_name": "hetzner-apps-01",
+  "hetzner_server_id": 162357642,
+  "hetzner_server_name": "apps-01",
+  "docker_major": 29,
+  "maintenance_calendar": "*-*-* 03:30:00 Europe/Dublin",
+  "backup_max_age_hours": 48,
+  "min_free_gib": 5,
+  "disk_paths": ["/", "/var/lib/docker"],
+  "required_mounts": [],
+  "recovery_reboot": true,
+  "resources": [
+    {
+      "name": "proxy",
+      "filters": [
+        "label=com.docker.compose.project=coolify-proxy",
+        "label=com.docker.compose.service=traefik"
+      ],
+      "probes": []
+    },
+    {
+      "name": "now-spinning",
+      "filters": [
+        "label=com.docker.compose.project=pmemejtrli4yqxtowoy7wefr",
+        "label=com.docker.compose.service=pmemejtrli4yqxtowoy7wefr-161158650059"
+      ],
+      "probes": [
+        {
+          "url": "https://now-spinning.rickroche.com/api/health",
+          "status": [200],
+          "body_regex": "\\\"status\\\":\\\"ok\\\""
+        }
+      ]
+    }
+  ]
+}

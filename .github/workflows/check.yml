@@ -1,0 +1,16 @@
+name: Validate maintenance code
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and unit tests (no host mutations)
+        run: |
+          for file in scripts/*.sh; do bash -n "$file"; done
+          python3 -m py_compile src/hostcare.py scripts/discover.py
+          python3 -m unittest discover -s tests -v
