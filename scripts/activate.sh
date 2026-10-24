@@ -24,6 +24,7 @@ if $monitor_only; then
   systemctl disable --now hostcare-maintenance.timer
   systemctl enable hostcare-boot.service
   systemctl enable --now hostcare-monitor.timer
+  systemctl enable --now hostcare-summary.timer
   echo 'Monitor-only enabled; Ubuntu apt timers are unchanged and Hostcare maintenance is disabled.'
   exit 0
 fi
@@ -62,5 +63,5 @@ p=Path('/var/lib/hostcare/state.json');s=json.loads(p.read_text()) if p.exists()
 s.setdefault('enabled_at',time.time());p.write_text(json.dumps(s,indent=2)+'\n');p.chmod(0o600)
 PY
 systemctl enable hostcare-boot.service
-systemctl enable --now hostcare-maintenance.timer hostcare-monitor.timer
+systemctl enable --now hostcare-maintenance.timer hostcare-monitor.timer hostcare-summary.timer
 systemctl list-timers 'hostcare-*'

@@ -1,4 +1,5 @@
 import importlib.util
+import datetime as dt
 import json
 from pathlib import Path
 import subprocess
@@ -6,6 +7,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 spec=importlib.util.spec_from_file_location('hostcare',Path(__file__).resolve().parents[1]/'src/hostcare.py')
 h=importlib.util.module_from_spec(spec);spec.loader.exec_module(h)
@@ -38,6 +40,75 @@ class Tests(unittest.TestCase):
         installer=Path(__file__).resolve().parents[1]/'scripts/install.sh'
         text=installer.read_text()
         self.assertIn('OnUnitInactiveSec=60min',text)
+
+    def test_monthly_timer_is_persistent_and_runs_on_first_in_dublin(self):
+        root=Path(__file__).resolve().parents[1]
+        installer=(root/'scripts/install.sh').read_text()
+        activate=(root/'scripts/activate.sh').read_text()
+        disable=(root/'scripts/disable.sh').read_text()
+        self.assertIn('OnCalendar=*-*-01 09:00:00 Europe/Dublin',installer)
+        self.assertIn('Persistent=true',installer)
+        self.assertIn('hostcare monthly-summary',installer)
+        self.assertGreaterEqual(activate.count('hostcare-summary.timer'),2)
+        self.assertIn('hostcare-summary.timer',disable)
+
+    def test_monthly_metrics_are_bucketed_by_dublin_calendar_month(self):
+        before_midnight=dt.datetime(2026,10,31,23,30,tzinfo=ZoneInfo('Europe/Dublin')).timestamp()
+        after_midnight=dt.datetime(2026,11,1,0,30,tzinfo=ZoneInfo('Europe/Dublin')).timestamp()
+        self.c.record_monthly_metric('monitor_checks',at=before_midnight)
+        self.c.record_monthly_metric('monitor_checks',at=after_midnight)
+        self.assertEqual(self.c.s['monthly_metrics']['2026-10']['monitor_checks'],1)
+        self.assertEqual(self.c.s['monthly_metrics']['2026-11']['monitor_checks'],1)
+
+    def test_monthly_summary_covers_previous_month_and_summarizes_operations(self):
+        now=dt.datetime(2026,11,1,9,0,tzinfo=ZoneInfo('Europe/Dublin'))
+        self.config['backup_policy']='allow_missing'
+        self.c.s.update(
+            monthly_tracking_started=dt.datetime(2026,10,24,10,tzinfo=ZoneInfo('Europe/Dublin')).timestamp(),
+            monthly_metrics={'2026-10':{
+                'monitor_checks':42,
+                'maintenance_attempts':2,
+                'maintenance_completed':1,
+                'maintenance_failed':1,
+                'alerts_opened':3,
+                'alerts_resolved':2,
+                'container_restart_attempts':1,
+                'container_restart_recovered':1,
+                'unhealthy_resource_checks':{'app':2},
+            }},
+            open_incidents={'disk':time.time()},
+            backup_status='missing_allowed',last_backup_check=time.time(),
+        )
+        with patch.object(self.c,'current_snapshot',return_value='Resources: 1/1 healthy; disks: OK') as snapshot, \
+             patch.object(self.c,'notify') as notify:
+            self.c.monthly_summary(now=now)
+        snapshot.assert_called_once_with()
+        key,message=notify.call_args.args[:2]
+        self.assertEqual(key,'monthly-summary:2026-10')
+        self.assertIn('October 2026',message)
+        self.assertIn('partial coverage since 24 Oct',message)
+        self.assertIn('2 attempts, 1 completed, 1 failed',message)
+        self.assertIn('42 monitoring checks',message)
+        self.assertIn('1 open now: disk',message)
+        self.assertIn('allow_missing; no verified backup',message)
+        self.assertEqual(notify.call_args.kwargs.get('require_webhook'),True)
+
+    def test_monthly_summary_does_not_duplicate_a_queued_report(self):
+        now=dt.datetime(2026,11,1,9,0,tzinfo=ZoneInfo('Europe/Dublin'))
+        self.c.s['pending_alerts']={'monthly-summary:2026-10':{'message':'report','resolved':False,'require_webhook':True}}
+        with patch.object(self.c,'current_snapshot') as snapshot,patch.object(self.c,'notify') as notify:
+            self.c.monthly_summary(now=now)
+        snapshot.assert_not_called()
+        notify.assert_not_called()
+
+    def test_webhook_required_monthly_notification_is_not_satisfied_by_smtp(self):
+        self.c.secret['smtp']={'host':'smtp.example','from':'from@example','to':'to@example'}
+        with patch.object(h.urllib.request,'urlopen',side_effect=OSError('offline')), \
+             patch.object(h.smtplib,'SMTP') as smtp:
+            sent=self.c.notify('monthly-summary:2026-10','monthly report',force=True,require_webhook=True)
+        self.assertFalse(sent)
+        smtp.assert_not_called()
+        self.assertTrue(self.c.s['pending_alerts']['monthly-summary:2026-10']['require_webhook'])
 
     def api(self,**server):
         s={'name':'test','backup_window':'00-04','volumes':[]};s.update(server)

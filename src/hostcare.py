@@ -14,6 +14,7 @@ import ssl
 import subprocess
 import sys
 import time
+from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 import urllib.request
 from email.message import EmailMessage
@@ -23,6 +24,7 @@ SECRETS = Path('/etc/hostcare/secrets.json')
 ROOT = Path('/var/lib/hostcare')
 DOCKER = ('docker-ce', 'docker-ce-cli', 'docker-ce-rootless-extras', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin')
 ALLOWED_BACKUP_NOTICE = 'No fresh provider backup; maintenance continues under backup_policy=allow_missing'
+DUBLIN = ZoneInfo('Europe/Dublin')
 
 
 def run(args, timeout=120, check=True, env=None):
@@ -106,21 +108,25 @@ class Care:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = root/'state.json'
         self.s = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if 'monthly_tracking_started' not in self.s:
+            self.s['monthly_tracking_started'] = time.time()
+            self.save()
 
     def save(self):
         atomic(self.path, self.s)
 
-    def notify(self, key, message, resolved=False, force=False):
+    def notify(self, key, message, resolved=False, force=False, require_webhook=False):
         alerts = self.s.setdefault('alerts', {})
         pending = self.s.setdefault('pending_alerts', {})
         if resolved and key not in alerts:
             pending.pop(key, None); self.save(); return True
         if not force and not resolved and time.time()-alerts.get(key, 0) < 21600:
             return True
-        pending[key] = {'message':message, 'resolved':resolved}; self.save()
+        pending[key] = {'message':message, 'resolved':resolved, **({'require_webhook':True} if require_webhook else {})}; self.save()
         text = f'[{self.c["host_name"]}] {message}'
         print(text, flush=True)
         sent = False
+        webhook_sent = False
         if self.secret.get('webhook_url'):
             try:
                 headers={'Content-Type':'application/json'}
@@ -128,11 +134,12 @@ class Care:
                     headers['User-Agent']='DiscordBot (https://github.com/rick-roche/coolify-host-maintenance, 1.0)'
                 req = urllib.request.Request(self.secret['webhook_url'], data=json.dumps({'content':text}).encode(), headers=headers)
                 with urllib.request.urlopen(req, timeout=20) as r:
-                    sent = 200 <= r.status < 300
+                    webhook_sent = 200 <= r.status < 300
+                    sent = webhook_sent
             except Exception:
                 print('Webhook delivery failed; queued for retry', flush=True)
         smtp = self.secret.get('smtp', {})
-        if smtp.get('host'):
+        if smtp.get('host') and not require_webhook:
             try:
                 msg=EmailMessage(); msg['From']=smtp['from']; msg['To']=smtp['to']
                 msg['Subject']='Hostcare: '+self.c['host_name']+(' recovered' if resolved else ' needs attention')
@@ -147,12 +154,82 @@ class Care:
                 sent=True
             except Exception:
                 print('SMTP delivery failed; queued for retry', flush=True)
+        if require_webhook:
+            sent = webhook_sent
         if sent:
             pending.pop(key,None)
-            if resolved: alerts.pop(key,None)
-            else: alerts[key]=time.time()
+            if resolved:
+                if key in alerts:
+                    alerts.pop(key,None)
+                    if not key.startswith(('monthly-summary:', 'setup-test', 'manual-test')):
+                        self.record_monthly_metric('alerts_resolved')
+                    self.s.setdefault('open_incidents',{}).pop(key,None)
+            else:
+                if key not in alerts and not key.startswith(('monthly-summary:', 'setup-test', 'manual-test')):
+                    self.record_monthly_metric('alerts_opened')
+                alerts[key]=time.time()
+                if not key.startswith(('monthly-summary:', 'setup-test', 'manual-test')):
+                    self.s.setdefault('open_incidents',{})[key]=time.time()
             self.save()
         return sent
+
+    def record_monthly_metric(self, name, amount=1, at=None, detail=None):
+        moment=dt.datetime.fromtimestamp(time.time() if at is None else at,DUBLIN)
+        month=moment.strftime('%Y-%m')
+        metrics=self.s.setdefault('monthly_metrics',{}).setdefault(month,{})
+        if detail is None:
+            metrics[name]=metrics.get(name,0)+amount
+        else:
+            values=metrics.setdefault(name,{})
+            values[detail]=values.get(detail,0)+amount
+        self.save()
+
+    def current_snapshot(self):
+        try:
+            healthy=[r['name'] for r in self.c['resources'] if self.resource_ok(r)]
+            health=f"Resources: {len(healthy)}/{len(self.c['resources'])} healthy"
+        except Exception:
+            health='Resources: check failed'
+        try:
+            self.disks(); disks='disks: OK'
+        except Exception as e:
+            disks='disks: '+str(e)
+        return health+'; '+disks
+
+    def monthly_summary(self, now=None):
+        now=now or dt.datetime.now(DUBLIN)
+        if now.tzinfo is None: now=now.replace(tzinfo=DUBLIN)
+        current=now.astimezone(DUBLIN).replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+        start=(current-dt.timedelta(days=1)).replace(day=1)
+        month=start.strftime('%Y-%m')
+        key='monthly-summary:'+month
+        if key in self.s.get('alerts',{}) or key in self.s.get('pending_alerts',{}):
+            return
+        metrics=self.s.get('monthly_metrics',{}).get(month,{})
+        tracking=dt.datetime.fromtimestamp(self.s.get('monthly_tracking_started',time.time()),DUBLIN)
+        partial=tracking>start
+        coverage=f'partial coverage since {tracking.strftime("%-d %b")}' if partial else 'full tracked month'
+        attempts=metrics.get('maintenance_attempts',0)
+        completed=metrics.get('maintenance_completed',0)
+        failed=metrics.get('maintenance_failed',0)
+        checks=metrics.get('monitor_checks',0)
+        issues=metrics.get('alerts_opened',0); resolved=metrics.get('alerts_resolved',0)
+        open_alerts=sorted(set(self.s.get('open_incidents',{})) | {k for k in self.s.get('alerts',{}) if not k.startswith('monthly-summary:')})
+        open_text=', '.join(open_alerts) if open_alerts else 'none'
+        recovery=(metrics.get('container_restart_attempts',0)+metrics.get('docker_restart_attempts',0)
+                  +metrics.get('recovery_reboot_attempts',0))
+        if self.s.get('backup_status')=='missing_allowed':
+            backup=f"{self.c.get('backup_policy','required')}; no verified backup (missing allowed)"
+        else:
+            backup=f"{self.c.get('backup_policy','required')}; {self.s.get('backup_status','not checked')}"
+        unhealthy=metrics.get('unhealthy_resource_checks',{})
+        unhealthy_text=', '.join(f'{n} ({v})' for n,v in sorted(unhealthy.items())) or 'none'
+        message=(f"Monthly Hostcare report — {start.strftime('%B %Y')} ({coverage}). "
+                 f"Maintenance: {attempts} attempts, {completed} completed, {failed} failed. "
+                 f"Monitoring: {checks} monitoring checks; unhealthy observations: {unhealthy_text}. "
+                 f"Incidents: {issues} opened, {resolved} resolved; {len(open_alerts)} open now: {open_text}. "
+                 f"Recovery actions: {recovery}. Backup: {backup}. Current snapshot: {self.current_snapshot()}.")
+        self.notify(key,message,force=True,require_webhook=True)
 
     def throttle(self, key, seconds):
         actions=self.s.setdefault('actions',{})
@@ -289,6 +366,7 @@ class Care:
             self.s.pop('temporary_docker_holds',None); self.save()
 
     def maintenance(self):
+        self.record_monthly_metric('maintenance_attempts')
         self.s['phase']='preflight'; self.s['maintenance_started']=time.time(); self.save()
         self.repair_holds(); self.disks(); self.backup_check()
         if not self.healthy(): raise RuntimeError('Apps unhealthy before maintenance; skip upgrades')
@@ -309,15 +387,17 @@ class Care:
         boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if self.s.get('pending_postboot') and self.s.get('reboot_boot_id')!=boot_id:
             self.s.update(pending_postboot=False,last_maintenance=time.time(),phase='idle'); self.save()
+            self.record_monthly_metric('maintenance_completed')
             self.notify('maintenance','Maintenance and reboot completed successfully',resolved=True)
         self.notify('postboot','Resources recovered after boot',resolved=True)
 
     def monitor(self):
+        self.record_monthly_metric('monitor_checks')
         pending_backup=self.s.get('pending_alerts',{}).get('backup',{})
         if self.c.get('backup_policy','required')=='allow_missing' and pending_backup.get('message')==ALLOWED_BACKUP_NOTICE:
             self.clear_backup_alert()
         for key,p in list(self.s.get('pending_alerts',{}).items()):
-            self.notify(key,p['message'],p['resolved'])
+            self.notify(key,p['message'],p['resolved'],require_webhook=p.get('require_webhook',False))
         try:
             run(['docker','info'],timeout=20)
             self.s.pop('docker_failed_since',None)
@@ -325,8 +405,10 @@ class Care:
         except Exception:
             since=self.s.setdefault('docker_failed_since',time.time()); self.save()
             if self.throttle('docker-restart',21600):
+                self.record_monthly_metric('docker_restart_attempts')
                 run(['systemctl','restart','docker'],timeout=180,check=False)
             elif time.time()-since>600 and self.c.get('recovery_reboot',True) and self.throttle('recovery-reboot',86400):
+                self.record_monthly_metric('recovery_reboot_attempts')
                 self.notify('docker','Docker still unavailable; requesting recovery reboot (one/24h limit)')
                 run(['systemctl','reboot'])
             self.notify('docker','Docker unavailable; bounded recovery is in progress')
@@ -337,9 +419,11 @@ class Care:
             if self.resource_ok(r):
                 misses[name]=0; self.notify('resource-'+name,name+' recovered',resolved=True); continue
             misses[name]=misses.get(name,0)+1; self.save()
+            self.record_monthly_metric('unhealthy_resource_checks',detail=name)
             if misses[name]<3: continue
             items=self.containers(r)
             if items and self.throttle('restart-'+name,3600):
+                self.record_monthly_metric('container_restart_attempts')
                 run(['docker','restart','--time','120',*[x['Id'] for x in items]],timeout=600,check=False)
                 time.sleep(20)
                 if self.resource_ok(r):
@@ -362,7 +446,7 @@ class Care:
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('command',choices=['preflight','monitor','maintenance','boot','status','alert-test','failure'])
+    parser.add_argument('command',choices=['preflight','monitor','maintenance','boot','status','alert-test','failure','monthly-summary'])
     parser.add_argument('unit',nargs='?',default='unknown')
     parser.add_argument('--monitor-only',action='store_true',help='Skip the backup gate for a monitoring-only preflight')
     args=parser.parse_args()
@@ -391,6 +475,8 @@ def main():
             elif args.command=='preflight': care.preflight(monitor_only=args.monitor_only)
             else: getattr(care,args.command)()
         except Exception as e:
+            if args.command=='maintenance':
+                care.record_monthly_metric('maintenance_failed')
             message=str(e) if isinstance(e,RuntimeError) else 'Operation failed ('+type(e).__name__+'); inspect logs/configuration'
             care.notify(args.command,message); return 1
     return 0

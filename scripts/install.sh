@@ -38,7 +38,7 @@ was_enabled=false
 if systemctl is-enabled --quiet hostcare-maintenance.timer 2>/dev/null; then was_enabled=true; fi
 was_monitor_only=false
 if ! $was_enabled && systemctl is-enabled --quiet hostcare-monitor.timer 2>/dev/null; then was_monitor_only=true; fi
-systemctl stop hostcare-maintenance.timer hostcare-monitor.timer 2>/dev/null || true
+systemctl stop hostcare-maintenance.timer hostcare-monitor.timer hostcare-summary.timer 2>/dev/null || true
 install -m 0755 "$repo_dir/src/hostcare.py" /usr/local/sbin/hostcare
 if [[ -e /etc/hostcare/config.json ]]; then
   cp -p /etc/hostcare/config.json /etc/hostcare/config.previous.json
@@ -99,6 +99,25 @@ OnUnitInactiveSec=60min
 [Install]
 WantedBy=timers.target
 ''',
+ 'hostcare-summary.service': '''[Unit]
+Description=Send monthly Hostcare operations report
+After=network-online.target
+Wants=network-online.target
+OnFailure=hostcare-alert@%n.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hostcare monthly-summary
+TimeoutStartSec=2min
+UMask=0077
+''',
+ 'hostcare-summary.timer': '''[Unit]
+Description=Monthly Hostcare Discord report
+[Timer]
+OnCalendar=*-*-01 09:00:00 Europe/Dublin
+Persistent=true
+[Install]
+WantedBy=timers.target
+''',
  'hostcare-boot.service': '''[Unit]
 Description=Verify application recovery after reboot
 After=network-online.target docker.service
@@ -131,6 +150,7 @@ if $was_enabled; then
   flock -u 9
   if /usr/local/sbin/hostcare preflight; then
     systemctl enable --now hostcare-maintenance.timer hostcare-monitor.timer
+    systemctl enable --now hostcare-summary.timer
   else
     echo 'Update installed but timers paused: preflight failed. Fix config then run scripts/activate.sh.'; exit 1
   fi
@@ -140,6 +160,7 @@ else
     if /usr/local/sbin/hostcare preflight --monitor-only; then
       systemctl enable hostcare-boot.service
       systemctl enable --now hostcare-monitor.timer
+      systemctl enable --now hostcare-summary.timer
       echo 'Updated; monitor-only operation resumed. Ubuntu apt scheduling remains unchanged.'
     else
       echo 'Update installed but monitoring remains paused: preflight failed. Fix config then rerun scripts/activate.sh --monitor-only.'; exit 1

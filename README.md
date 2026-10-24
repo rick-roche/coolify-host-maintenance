@@ -19,9 +19,12 @@ Keep the shared code in this GitHub repo and add one non-secret JSON file per ho
 | Monitoring                 | Roughly every 60 minutes after the previous check finishes; first check 12 minutes after boot                                                                                  |
 | Recovery                   | Three unhealthy resource checks → restart existing matching containers, at most once/resource/hour; Docker outage → one daemon restart/6h, then at most one recovery reboot/24h |
 | Alerts                     | SMTP to your existing inbox and/or a Discord-compatible webhook; queued retry on delivery failure; six-hour reminder limit per issue                                            |
+| Monthly report             | First of each month at 09:00 Europe/Dublin; persistent systemd timer catches up after downtime and retries Discord delivery failures |
 | Provider backup monitoring | Recheck backup freshness every 6 hours while monitoring, and before every update                                                                                                |
 
 Healthy routine work is quiet. There is no automated app-image deployment, schema migration, volume deletion, image pruning, OS release upgrade, hard reset or disk restore. Automatic maintenance uses a host lock and avoids running concurrently with its own monitor/installer. It cannot lock Coolify Cloud or your CI pipeline: keep deployments outside the maintenance window.
+
+The monthly Discord report summarizes tracked maintenance, monitoring, incidents, recovery actions, backup posture and a current app/disk snapshot. It explicitly marks partial coverage until a complete tracked month is available; monitoring intervals are observations, not uptime measurements. The report is considered delivered only when the configured webhook accepts it, regardless of SMTP status.
 
 ## What you need
 
@@ -110,7 +113,7 @@ Disabling refuses while maintenance is active, restores previous apt-timer enabl
 
 ## Verification and limits
 
-37 mocked safety tests, Python/Bash syntax checks and generated systemd unit verification passed when packaged. The tests cover supported Ubuntu releases, hourly monitor scheduling, required and optional backup policies and alert behavior, monitor-only activation preflight, Discord webhook headers, backup identity/freshness/pagination, attached-volume refusal, alert queues, recovery limits, TLS probes, reboot verification and interrupted package holds. This repo has **not** been installed or tested against your live host, credentials or provider account.
+Mocked safety tests, Python/Bash syntax checks and generated systemd unit verification cover monthly reporting and delivery, supported Ubuntu releases, hourly monitoring, required and optional backup policies, monitor-only activation, webhook behavior, backup identity/freshness/pagination, attached-volume refusal, alert queues, recovery limits, TLS probes, reboot verification and interrupted package holds. This repo has **not** been installed or tested against your live host, credentials or provider account.
 
 Before enabling on an important host, test a disposable clone or a restore from a provider backup. Then exercise one planned reboot, verify every app and its persistence, confirm a real alert reaches you, and inspect the next scheduled run. Mocked tests cannot prove live backup restorability, Docker compatibility or successful delivery to a phone.
 

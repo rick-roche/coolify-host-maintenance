@@ -141,7 +141,7 @@ On the host:
 bash /opt/coolify-host-maintenance/scripts/activate.sh
 ```
 
-Activation checks backups, disk/mounts, app health, restart policies and alert delivery. Confirm the test email/webhook reaches you. Then it disables Ubuntu's separate apt timers, installs a managed apt automatic-update/reboot override and enables Hostcare's timers/startup verifier. A single scheduler owns updates and reboots. It never terminates an already running apt transaction; retry after that job finishes.
+Activation checks backups, disk/mounts, app health, restart policies and alert delivery. Confirm the test email/webhook reaches you. Then it disables Ubuntu's separate apt timers, installs a managed apt automatic-update/reboot override and enables Hostcare's timers/startup verifier, including the monthly report timer. A single scheduler owns updates and reboots. It never terminates an already running apt transaction; retry after that job finishes.
 
 If you want health monitoring but no package upgrades/reboots, enable **monitor-only** operation:
 
@@ -149,7 +149,7 @@ If you want health monitoring but no package upgrades/reboots, enable **monitor-
 bash /opt/coolify-host-maintenance/scripts/activate.sh --monitor-only
 ```
 
-This checks disk/mounts, Docker, monitored resources and alert delivery without requiring the backup gate. It enables health monitoring and boot recovery, but leaves Ubuntu's apt timers unchanged and keeps Hostcare's maintenance timer disabled. Hostcare will report backup problems through its monitor. If Hostcare already owns apt scheduling, first run `scripts/disable.sh` to restore the previous scheduler, then activate monitor-only.
+This checks disk/mounts, Docker, monitored resources and alert delivery without requiring the backup gate. It enables health monitoring, boot recovery, and the monthly report while leaving Ubuntu's apt timers unchanged and keeping Hostcare's maintenance timer disabled. Hostcare will report backup problems through its monitor. If Hostcare already owns apt scheduling, first run `scripts/disable.sh` to restore the previous scheduler, then activate monitor-only.
 
 If instead you want scheduled package maintenance without a current provider backup, set `"backup_policy": "allow_missing"` in the host profile and deploy it. Then use normal activation. Hostcare still checks the Hetzner server identity and refuses attached Hetzner Volumes; token/API failures still block maintenance and alert. An expected missing or stale backup is recorded in status and logs but does not generate a Discord/email notification or block package updates/reboot. This deliberately accepts the risk that an update or disk failure may be unrecoverable.
 

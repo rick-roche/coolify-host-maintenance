@@ -4,7 +4,7 @@ set -euo pipefail
 if systemctl is-active --quiet hostcare-maintenance.service; then
   echo 'Maintenance is running. Let it finish; do not kill a package transaction.'; exit 1
 fi
-systemctl disable --now hostcare-maintenance.timer hostcare-monitor.timer
+systemctl disable --now hostcare-maintenance.timer hostcare-monitor.timer hostcare-summary.timer
 systemctl disable hostcare-boot.service
 if [[ -e /var/lib/hostcare/owns-apt-config ]]; then
   rm -f /etc/apt/apt.conf.d/99hostcare /var/lib/hostcare/owns-apt-config
