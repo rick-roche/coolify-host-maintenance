@@ -84,6 +84,35 @@ class Tests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'read-only Hetzner API token'):self.c.backup_check()
         api.assert_not_called()
 
+    def test_allow_missing_backup_state_does_not_notify(self):
+        self.config['backup_policy']='allow_missing'
+        with patch.object(h,'run',return_value=result()),patch.object(self.c,'resource_ok',return_value=True), \
+             patch.object(self.c,'disks'),patch.object(self.c,'backup_check',return_value=False), \
+             patch.object(self.c,'notify') as notify,patch.object(self.c,'finish_reboot'):
+            self.c.monitor()
+        self.assertFalse(any(call.args[0]=='backup' for call in notify.call_args_list))
+
+    def test_allow_missing_clears_queued_routine_backup_notice_without_retrying_it(self):
+        self.config['backup_policy']='allow_missing'
+        message='No fresh provider backup; maintenance continues under backup_policy=allow_missing'
+        self.c.s['pending_alerts']={'backup':{'message':message,'resolved':False}}
+        self.c.s['alerts']={'backup':time.time()}
+        with patch.object(h,'run',return_value=result()),patch.object(self.c,'resource_ok',return_value=True), \
+             patch.object(self.c,'disks'),patch.object(self.c,'backup_check',return_value=False), \
+             patch.object(self.c,'notify') as notify,patch.object(self.c,'finish_reboot'):
+            self.c.monitor()
+        self.assertNotIn('backup',self.c.s['pending_alerts'])
+        self.assertNotIn('backup',self.c.s['alerts'])
+        self.assertFalse(any(call.args[0]=='backup' for call in notify.call_args_list))
+
+    def test_allow_missing_still_notifies_on_backup_api_errors(self):
+        self.config['backup_policy']='allow_missing'
+        with patch.object(h,'run',return_value=result()),patch.object(self.c,'resource_ok',return_value=True), \
+             patch.object(self.c,'disks'),patch.object(self.c,'backup_check',side_effect=RuntimeError('Hetzner API request failed')), \
+             patch.object(self.c,'notify') as notify,patch.object(self.c,'finish_reboot'):
+            self.c.monitor()
+        self.assertTrue(any(call.args[:2]==('backup','Hetzner API request failed') for call in notify.call_args_list))
+
     def test_unknown_backup_policy_is_rejected(self):
         self.config['backup_policy']='ignore'
         with self.assertRaisesRegex(RuntimeError,'backup_policy'):h.validate(self.config)

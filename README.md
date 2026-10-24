@@ -110,7 +110,7 @@ Disabling refuses while maintenance is active, restores previous apt-timer enabl
 
 ## Verification and limits
 
-34 mocked safety tests, Python/Bash syntax checks and generated systemd unit verification passed when packaged. The tests cover supported Ubuntu releases, hourly monitor scheduling, required and optional backup policies, monitor-only activation preflight, Discord webhook headers, backup identity/freshness/pagination, attached-volume refusal, alert queues, recovery limits, TLS probes, reboot verification and interrupted package holds. This repo has **not** been installed or tested against your live host, credentials or provider account.
+37 mocked safety tests, Python/Bash syntax checks and generated systemd unit verification passed when packaged. The tests cover supported Ubuntu releases, hourly monitor scheduling, required and optional backup policies and alert behavior, monitor-only activation preflight, Discord webhook headers, backup identity/freshness/pagination, attached-volume refusal, alert queues, recovery limits, TLS probes, reboot verification and interrupted package holds. This repo has **not** been installed or tested against your live host, credentials or provider account.
 
 Before enabling on an important host, test a disposable clone or a restore from a provider backup. Then exercise one planned reboot, verify every app and its persistence, confirm a real alert reaches you, and inspect the next scheduled run. Mocked tests cannot prove live backup restorability, Docker compatibility or successful delivery to a phone.
 

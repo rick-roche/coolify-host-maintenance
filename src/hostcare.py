@@ -22,6 +22,7 @@ CONFIG = Path('/etc/hostcare/config.json')
 SECRETS = Path('/etc/hostcare/secrets.json')
 ROOT = Path('/var/lib/hostcare')
 DOCKER = ('docker-ce', 'docker-ce-cli', 'docker-ce-rootless-extras', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin')
+ALLOWED_BACKUP_NOTICE = 'No fresh provider backup; maintenance continues under backup_policy=allow_missing'
 
 
 def run(args, timeout=120, check=True, env=None):
@@ -173,9 +174,15 @@ class Care:
         self.s['last_backup_check']=time.time()
         self.s['backup_status']='missing_allowed'
         self.s.pop('backup_created',None)
+        self.clear_backup_alert()
         self.save()
         print(f'[{self.c["host_name"]}] {message}; continuing because backup_policy=allow_missing',flush=True)
         return False
+
+    def clear_backup_alert(self):
+        self.s.setdefault('alerts',{}).pop('backup',None)
+        self.s.setdefault('pending_alerts',{}).pop('backup',None)
+        self.save()
 
     def backup_check(self):
         token=self.secret.get('hetzner_read_token','')
@@ -306,6 +313,9 @@ class Care:
         self.notify('postboot','Resources recovered after boot',resolved=True)
 
     def monitor(self):
+        pending_backup=self.s.get('pending_alerts',{}).get('backup',{})
+        if self.c.get('backup_policy','required')=='allow_missing' and pending_backup.get('message')==ALLOWED_BACKUP_NOTICE:
+            self.clear_backup_alert()
         for key,p in list(self.s.get('pending_alerts',{}).items()):
             self.notify(key,p['message'],p['resolved'])
         try:
@@ -343,8 +353,6 @@ class Care:
                 verified=self.backup_check()
                 if verified:
                     self.notify('backup','Provider backups recovered',resolved=True)
-                else:
-                    self.notify('backup','No fresh provider backup; maintenance continues under backup_policy=allow_missing')
             except RuntimeError as e: self.notify('backup',str(e))
         if time.time()-self.s.get('last_maintenance',self.s.get('enabled_at',time.time()))>48*3600:
             self.notify('maintenance','No successful maintenance plus reboot health verification in 48h')

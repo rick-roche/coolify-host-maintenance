@@ -151,7 +151,7 @@ bash /opt/coolify-host-maintenance/scripts/activate.sh --monitor-only
 
 This checks disk/mounts, Docker, monitored resources and alert delivery without requiring the backup gate. It enables health monitoring and boot recovery, but leaves Ubuntu's apt timers unchanged and keeps Hostcare's maintenance timer disabled. Hostcare will report backup problems through its monitor. If Hostcare already owns apt scheduling, first run `scripts/disable.sh` to restore the previous scheduler, then activate monitor-only.
 
-If instead you want scheduled package maintenance without a current provider backup, set `"backup_policy": "allow_missing"` in the host profile and deploy it. Then use normal activation. Hostcare still checks the Hetzner server identity and refuses attached Hetzner Volumes; token/API failures still block maintenance. A missing or stale backup is recorded in status and logs and warned about, but does not block package updates/reboot. This deliberately accepts the risk that an update or disk failure may be unrecoverable.
+If instead you want scheduled package maintenance without a current provider backup, set `"backup_policy": "allow_missing"` in the host profile and deploy it. Then use normal activation. Hostcare still checks the Hetzner server identity and refuses attached Hetzner Volumes; token/API failures still block maintenance and alert. An expected missing or stale backup is recorded in status and logs but does not generate a Discord/email notification or block package updates/reboot. This deliberately accepts the risk that an update or disk failure may be unrecoverable.
 
 Check:
 
