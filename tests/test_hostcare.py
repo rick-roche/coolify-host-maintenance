@@ -52,6 +52,32 @@ class Tests(unittest.TestCase):
         self.assertGreaterEqual(activate.count('hostcare-summary.timer'),2)
         self.assertIn('hostcare-summary.timer',disable)
 
+    def test_monthly_summary_command_dispatches_to_python_method(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            config_path=root/'config.json'; secrets_path=root/'secrets.json'
+            config_path.write_text(json.dumps(self.config)); secrets_path.write_text('{}')
+
+            class RootOwnedFile:
+                def __init__(self,path): self.path=path
+                def stat(self):
+                    class Stat: st_uid=0; st_mode=0o100600
+                    return Stat()
+                def read_text(self): return self.path.read_text()
+
+            called=[]
+
+            class FakeCare:
+                def __init__(self,*args): pass
+                def monthly_summary(self): called.append(True)
+                def notify(self,*args): pass
+
+            with patch.object(h,'CONFIG',RootOwnedFile(config_path)), patch.object(h,'SECRETS',RootOwnedFile(secrets_path)), \
+                 patch.object(h,'ROOT',root/'state'), patch.object(h,'Care',FakeCare), \
+                 patch.object(h.os,'geteuid',return_value=0), patch.object(h.sys,'argv',['hostcare','monthly-summary']):
+                self.assertEqual(h.main(),0)
+            self.assertEqual(called,[True])
+
     def test_monthly_metrics_are_bucketed_by_dublin_calendar_month(self):
         before_midnight=dt.datetime(2026,10,31,23,30,tzinfo=ZoneInfo('Europe/Dublin')).timestamp()
         after_midnight=dt.datetime(2026,11,1,0,30,tzinfo=ZoneInfo('Europe/Dublin')).timestamp()

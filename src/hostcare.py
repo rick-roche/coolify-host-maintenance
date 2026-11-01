@@ -473,7 +473,7 @@ def main():
                 if not care.notify('manual-test','Manual alert test',force=True): return 1
             elif args.command=='failure': care.notify('service-'+args.unit,'Service failed: '+args.unit)
             elif args.command=='preflight': care.preflight(monitor_only=args.monitor_only)
-            else: getattr(care,args.command)()
+            else: getattr(care,args.command.replace('-','_'))()
         except Exception as e:
             if args.command=='maintenance':
                 care.record_monthly_metric('maintenance_failed')
